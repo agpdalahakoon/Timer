@@ -1,15 +1,19 @@
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
+#include <glib/gstdio.h>
 #include <X11/extensions/scrnsaver.h>
 
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <sys/file.h>
+#include <unistd.h>
 
 #define APP_MAIN_WINDOW_WIDTH 270
 #define APP_MAIN_WINDOW_HEIGHT 130
@@ -23,22 +27,36 @@ namespace MainWindow
     GtkWidget *stopBtn = nullptr;
 
     bool isRunning = false;
+    bool timerInitialized = false;
     guint timerSourceId = 0;
+    guint commandSourceId = 0;
+    int appLockFd = -1;
     long long totalElapsedSeconds = 0;
     long long lastAutoSavedElapsedSeconds = 0;
     long long idlePauseGraceSeconds = 0;
+    std::time_t runStartedEpoch = 0;
     std::chrono::steady_clock::time_point runStartTime;
     std::chrono::steady_clock::time_point ignoreIdleUntilTime;
 
     constexpr unsigned long DESKTOP_IDLE_PAUSE_MS = 5UL * 60UL * 1000UL;
 
+    const std::string timerDataDir = "/home/praveen/soft/Timer";
     const std::string stateFilePath = "/home/praveen/soft/Timer/timer_state.txt";
     const std::string settingsFilePath = "/home/praveen/soft/Timer/timer_settings.txt";
     const std::string pauseLogFilePath = "/home/praveen/soft/Timer/pause_log.txt";
+    const std::string statusFilePath = "/home/praveen/soft/Timer/timer_status.ini";
+    const std::string commandFilePath = "/home/praveen/soft/Timer/timer_command.txt";
+    const std::string lockFilePath = "/home/praveen/soft/Timer/timer.lock";
     const char *graceRemainingTimerDataKey = "grace-remaining-timer-id";
+
+    void ensureTimerDataDir()
+    {
+        g_mkdir_with_parents(timerDataDir.c_str(), 0755);
+    }
 
     long long loadSavedElapsedSeconds()
     {
+        ensureTimerDataDir();
         std::ifstream stateFile(stateFilePath);
         long long seconds = 0;
         if (stateFile.is_open())
@@ -50,6 +68,7 @@ namespace MainWindow
 
     long long loadSavedIdleGraceSeconds()
     {
+        ensureTimerDataDir();
         std::ifstream settingsFile(settingsFilePath);
         long long minutes = 0;
         if (settingsFile.is_open())
@@ -67,6 +86,7 @@ namespace MainWindow
 
     void saveIdleGraceSeconds(long long seconds)
     {
+        ensureTimerDataDir();
         std::ofstream settingsFile(settingsFilePath, std::ios::trunc);
         if (settingsFile.is_open())
         {
@@ -76,6 +96,7 @@ namespace MainWindow
 
     void saveElapsedSeconds(long long seconds)
     {
+        ensureTimerDataDir();
         std::ofstream stateFile(stateFilePath, std::ios::trunc);
         if (stateFile.is_open())
         {
@@ -217,6 +238,46 @@ namespace MainWindow
         return static_cast<long long>((remainingMilliseconds + 999) / 1000);
     }
 
+    long long visiblePauseCountdownSeconds(bool hasDesktopIdle, unsigned long idleMilliseconds)
+    {
+        if (!isRunning || !hasDesktopIdle)
+        {
+            return -1;
+        }
+
+        long long graceSeconds = remainingGraceSeconds();
+        long long pauseSeconds = remainingIdlePauseSeconds(idleMilliseconds);
+        return graceSeconds > pauseSeconds ? graceSeconds : pauseSeconds;
+    }
+
+    void writeStatusFile(bool hasDesktopIdle, unsigned long idleMilliseconds)
+    {
+        ensureTimerDataDir();
+        long long elapsed = currentDisplayedElapsedSeconds();
+        long long pauseRemaining = visiblePauseCountdownSeconds(hasDesktopIdle, idleMilliseconds);
+
+        std::ofstream statusFile(statusFilePath, std::ios::trunc);
+        if (!statusFile.is_open())
+        {
+            return;
+        }
+
+        statusFile << "running=" << (isRunning ? 1 : 0) << "\n";
+        statusFile << "elapsed_seconds=" << elapsed << "\n";
+        statusFile << "run_started_epoch=" << static_cast<long long>(runStartedEpoch) << "\n";
+        statusFile << "idle_available=" << (hasDesktopIdle ? 1 : 0) << "\n";
+        statusFile << "pause_remaining_seconds=" << pauseRemaining << "\n";
+        statusFile << "idle_grace_seconds=" << idlePauseGraceSeconds << "\n";
+        statusFile << "updated_epoch=" << static_cast<long long>(std::time(nullptr)) << "\n";
+    }
+
+    void writeStatusFile()
+    {
+        unsigned long idleMilliseconds = 0;
+        bool hasDesktopIdle = getDesktopIdleMilliseconds(idleMilliseconds);
+        writeStatusFile(hasDesktopIdle, idleMilliseconds);
+    }
+
     void refreshInactiveTimeLabel(bool hasDesktopIdle, unsigned long idleMilliseconds)
     {
         if (inactiveTimeLabel == nullptr)
@@ -235,10 +296,7 @@ namespace MainWindow
         }
         else
         {
-            long long graceSeconds = remainingGraceSeconds();
-            long long pauseSeconds = remainingIdlePauseSeconds(idleMilliseconds);
-            long long remainingSeconds = graceSeconds > pauseSeconds ? graceSeconds : pauseSeconds;
-            text = formatMinutesSeconds(remainingSeconds);
+            text = formatMinutesSeconds(visiblePauseCountdownSeconds(hasDesktopIdle, idleMilliseconds));
         }
 
         gchar *escapedText = g_markup_escape_text(text.c_str(), -1);
@@ -257,6 +315,11 @@ namespace MainWindow
 
     void refreshElapsedLabel()
     {
+        if (timeLabel == nullptr)
+        {
+            return;
+        }
+
         std::string text = formatElapsed(currentDisplayedElapsedSeconds());
         gchar *escapedText = g_markup_escape_text(text.c_str(), -1);
         gchar *markup = g_strdup_printf("<span font_desc=\"Monospace Bold 36\">%s</span>", escapedText);
@@ -267,6 +330,7 @@ namespace MainWindow
 
     void appendPauseLog(long long elapsedSeconds)
     {
+        ensureTimerDataDir();
         std::ofstream logFile(pauseLogFilePath, std::ios::app);
         if (!logFile.is_open())
         {
@@ -291,6 +355,11 @@ namespace MainWindow
 
     void setStartPauseButtonLabel()
     {
+        if (startPauseBtn == nullptr)
+        {
+            return;
+        }
+
         gtk_button_set_label(GTK_BUTTON(startPauseBtn), isRunning ? "Pause" : "Start");
     }
 
@@ -304,6 +373,112 @@ namespace MainWindow
     }
 
     void pauseTimerAndSave(bool writePauseLog, bool removeTickSource = true);
+    void startTimer();
+    void stopTimer();
+    GtkWidget *createMainWindowView();
+    void showMainWindow();
+    void showSettingsWindow();
+
+    bool writeCommandFile(const std::string &command)
+    {
+        ensureTimerDataDir();
+        std::ofstream commandFile(commandFilePath, std::ios::trunc);
+        if (!commandFile.is_open())
+        {
+            return false;
+        }
+
+        commandFile << command << "\n";
+        return true;
+    }
+
+    bool acquireAppLock(bool showExistingWindow)
+    {
+        ensureTimerDataDir();
+        appLockFd = open(lockFilePath.c_str(), O_CREAT | O_RDWR, 0644);
+        if (appLockFd < 0)
+        {
+            return true;
+        }
+
+        if (flock(appLockFd, LOCK_EX | LOCK_NB) != 0)
+        {
+            close(appLockFd);
+            appLockFd = -1;
+
+            if (showExistingWindow)
+            {
+                writeCommandFile("show");
+            }
+
+            return false;
+        }
+
+        ftruncate(appLockFd, 0);
+        std::string pid = std::to_string(getpid()) + "\n";
+        write(appLockFd, pid.c_str(), pid.size());
+        return true;
+    }
+
+    void handleCommand(const std::string &command)
+    {
+        if (command == "start")
+        {
+            if (!isRunning)
+            {
+                startTimer();
+            }
+        }
+        else if (command == "pause")
+        {
+            pauseTimerAndSave(true);
+        }
+        else if (command == "toggle")
+        {
+            if (isRunning)
+            {
+                pauseTimerAndSave(true);
+            }
+            else
+            {
+                startTimer();
+            }
+        }
+        else if (command == "stop")
+        {
+            stopTimer();
+        }
+        else if (command == "show")
+        {
+            showMainWindow();
+        }
+        else if (command == "settings")
+        {
+            showSettingsWindow();
+        }
+    }
+
+    gboolean onCommandPoll(gpointer)
+    {
+        std::ifstream commandFile(commandFilePath);
+        if (!commandFile.is_open())
+        {
+            return TRUE;
+        }
+
+        std::string command;
+        commandFile >> command;
+        commandFile.close();
+        std::remove(commandFilePath.c_str());
+
+        if (!command.empty())
+        {
+            handleCommand(command);
+            writeStatusFile();
+        }
+
+        return TRUE;
+    }
 
     gboolean onTick(gpointer)
     {
@@ -324,6 +499,7 @@ namespace MainWindow
         {
             pauseTimerAndSave(true, false);
             timerSourceId = 0;
+            writeStatusFile();
             return FALSE;
         }
 
@@ -334,11 +510,8 @@ namespace MainWindow
             lastAutoSavedElapsedSeconds = elapsed;
         }
 
-        gchar *escapedText = g_markup_escape_text(formatElapsed(elapsed).c_str(), -1);
-        gchar *markup = g_strdup_printf("<span font_desc=\"Monospace Bold 36\">%s</span>", escapedText);
-        gtk_label_set_markup(GTK_LABEL(timeLabel), markup);
-        g_free(markup);
-        g_free(escapedText);
+        refreshElapsedLabel();
+        writeStatusFile(hasDesktopIdle, idleMilliseconds);
         return TRUE;
     }
 
@@ -367,26 +540,32 @@ namespace MainWindow
         setStartPauseButtonLabel();
         refreshElapsedLabel();
         refreshInactiveTimeLabel();
+        writeStatusFile();
     }
 
-    void onStartPauseClicked(GtkWidget *, gpointer)
+    void startTimer()
     {
-        if (!isRunning)
+        if (isRunning)
         {
-            runStartTime = std::chrono::steady_clock::now();
-            resetIdleGraceWindow();
-            isRunning = true;
-            setStartPauseButtonLabel();
-            refreshElapsedLabel();
-            refreshInactiveTimeLabel();
-            timerSourceId = g_timeout_add(1000, onTick, nullptr);
             return;
         }
 
-        pauseTimerAndSave(true);
+        runStartTime = std::chrono::steady_clock::now();
+        runStartedEpoch = std::time(nullptr);
+        resetIdleGraceWindow();
+        isRunning = true;
+        setStartPauseButtonLabel();
+        refreshElapsedLabel();
+        refreshInactiveTimeLabel();
+        writeStatusFile();
+
+        if (timerSourceId == 0)
+        {
+            timerSourceId = g_timeout_add(1000, onTick, nullptr);
+        }
     }
 
-    void onStopClicked(GtkWidget *, gpointer)
+    void stopTimer()
     {
         if (isRunning)
         {
@@ -399,6 +578,23 @@ namespace MainWindow
         setStartPauseButtonLabel();
         refreshElapsedLabel();
         refreshInactiveTimeLabel();
+        writeStatusFile();
+    }
+
+    void onStartPauseClicked(GtkWidget *, gpointer)
+    {
+        if (!isRunning)
+        {
+            startTimer();
+            return;
+        }
+
+        pauseTimerAndSave(true);
+    }
+
+    void onStopClicked(GtkWidget *, gpointer)
+    {
+        stopTimer();
     }
 
     gboolean onGraceRemainingTick(gpointer userData)
@@ -494,6 +690,25 @@ namespace MainWindow
         return FALSE;
     }
 
+    void showMainWindow()
+    {
+        GtkWidget *window = createMainWindowView();
+        gtk_widget_show_all(window);
+        gtk_window_present(GTK_WINDOW(window));
+    }
+
+    void showSettingsWindow()
+    {
+        showMainWindow();
+        openSettingsDialog();
+    }
+
+    gboolean onWindowDelete(GtkWidget *widget, GdkEvent *, gpointer)
+    {
+        gtk_widget_hide(widget);
+        return TRUE;
+    }
+
     void onWindowDestroy(GtkWidget *, gpointer)
     {
         if (isRunning)
@@ -507,6 +722,13 @@ namespace MainWindow
             appendPauseLog(totalElapsedSeconds);
         }
 
+        if (commandSourceId != 0)
+        {
+            g_source_remove(commandSourceId);
+            commandSourceId = 0;
+        }
+
+        writeStatusFile();
         gtk_main_quit();
     }
 
@@ -550,8 +772,39 @@ namespace MainWindow
         gtk_window_move(GTK_WINDOW(widget), x, y);
     }
 
+    void initializeTimerBackend()
+    {
+        if (timerInitialized)
+        {
+            return;
+        }
+
+        totalElapsedSeconds = loadSavedElapsedSeconds();
+        idlePauseGraceSeconds = loadSavedIdleGraceSeconds();
+        lastAutoSavedElapsedSeconds = totalElapsedSeconds;
+
+        // Keep the previous behavior: opening the app starts/resumes the timer.
+        startTimer();
+        appendPauseLog(currentDisplayedElapsedSeconds());
+
+        if (commandSourceId == 0)
+        {
+            commandSourceId = g_timeout_add(500, onCommandPoll, nullptr);
+        }
+
+        timerInitialized = true;
+        writeStatusFile();
+    }
+
     GtkWidget *createMainWindowView()
     {
+        initializeTimerBackend();
+
+        if (mainWindow != nullptr)
+        {
+            return mainWindow;
+        }
+
         if (mainWindow == nullptr)
         {
             mainWindow = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -571,6 +824,7 @@ namespace MainWindow
                 &hints,
                 static_cast<GdkWindowHints>(
                     GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
+            g_signal_connect(mainWindow, "delete-event", G_CALLBACK(onWindowDelete), nullptr);
             g_signal_connect(mainWindow, "destroy", G_CALLBACK(onWindowDestroy), nullptr);
             g_signal_connect(mainWindow, "realize", G_CALLBACK(moveWindowToBottomRight), nullptr);
         }
@@ -608,31 +862,19 @@ namespace MainWindow
         gtk_box_pack_start(GTK_BOX(buttonRow), stopBtn, TRUE, TRUE, 0);
         g_signal_connect(stopBtn, "clicked", G_CALLBACK(onStopClicked), nullptr);
 
-        totalElapsedSeconds = loadSavedElapsedSeconds();
-        idlePauseGraceSeconds = loadSavedIdleGraceSeconds();
-        lastAutoSavedElapsedSeconds = totalElapsedSeconds;
-
-        // Auto-start the timer when the window opens.
-        runStartTime = std::chrono::steady_clock::now();
-        resetIdleGraceWindow();
-
-        long long elapsed = currentDisplayedElapsedSeconds();
-        appendPauseLog(elapsed);
-        isRunning = true;
-
         refreshElapsedLabel();
         refreshInactiveTimeLabel();
         setStartPauseButtonLabel();
-        if (timerSourceId == 0)
-        {
-            timerSourceId = g_timeout_add(1000, onTick, nullptr);
-        }
 
         return mainWindow;
     }
 
-    void openMainWindow()
+    void openMainWindow(bool hidden = false)
     {
-        gtk_widget_show_all(createMainWindowView());
+        initializeTimerBackend();
+        if (!hidden)
+        {
+            showMainWindow();
+        }
     }
 }

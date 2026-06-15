@@ -1,0 +1,7 @@
+{
+  "uuid": "timer-panel@praveen.local",
+  "name": "Timer Panel",
+  "description": "Shows the Timer app elapsed time and inactivity auto-pause countdown in the GNOME top bar.",
+  "shell-version": ["42"],
+  "version": 1
+}
