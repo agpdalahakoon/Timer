@@ -17,6 +17,7 @@
 namespace MainWindow
 {
     GtkWidget *mainWindow = nullptr;
+    GtkWidget *inactiveTimeLabel = nullptr;
     GtkWidget *timeLabel = nullptr;
     GtkWidget *startPauseBtn = nullptr;
     GtkWidget *stopBtn = nullptr;
@@ -193,6 +194,67 @@ namespace MainWindow
         gtk_label_set_text(GTK_LABEL(label), text.c_str());
     }
 
+    long long remainingGraceSeconds()
+    {
+        if (!isRunning || idlePauseGraceSeconds <= 0)
+        {
+            return 0;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(ignoreIdleUntilTime - now).count();
+        return remaining > 0 ? remaining : 0;
+    }
+
+    long long remainingIdlePauseSeconds(unsigned long idleMilliseconds)
+    {
+        if (idleMilliseconds >= DESKTOP_IDLE_PAUSE_MS)
+        {
+            return 0;
+        }
+
+        unsigned long remainingMilliseconds = DESKTOP_IDLE_PAUSE_MS - idleMilliseconds;
+        return static_cast<long long>((remainingMilliseconds + 999) / 1000);
+    }
+
+    void refreshInactiveTimeLabel(bool hasDesktopIdle, unsigned long idleMilliseconds)
+    {
+        if (inactiveTimeLabel == nullptr)
+        {
+            return;
+        }
+
+        std::string text;
+        if (!isRunning)
+        {
+            text = "Paused";
+        }
+        else if (!hasDesktopIdle)
+        {
+            text = "Idle unavailable";
+        }
+        else
+        {
+            long long graceSeconds = remainingGraceSeconds();
+            long long pauseSeconds = remainingIdlePauseSeconds(idleMilliseconds);
+            long long remainingSeconds = graceSeconds > pauseSeconds ? graceSeconds : pauseSeconds;
+            text = formatMinutesSeconds(remainingSeconds);
+        }
+
+        gchar *escapedText = g_markup_escape_text(text.c_str(), -1);
+        gchar *markup = g_strdup_printf("<span font_desc=\"Monospace 9\">%s</span>", escapedText);
+        gtk_label_set_markup(GTK_LABEL(inactiveTimeLabel), markup);
+        g_free(markup);
+        g_free(escapedText);
+    }
+
+    void refreshInactiveTimeLabel()
+    {
+        unsigned long idleMilliseconds = 0;
+        bool hasDesktopIdle = getDesktopIdleMilliseconds(idleMilliseconds);
+        refreshInactiveTimeLabel(hasDesktopIdle, idleMilliseconds);
+    }
+
     void refreshElapsedLabel()
     {
         std::string text = formatElapsed(currentDisplayedElapsedSeconds());
@@ -247,6 +309,7 @@ namespace MainWindow
     {
         unsigned long idleMilliseconds = 0;
         bool hasDesktopIdle = getDesktopIdleMilliseconds(idleMilliseconds);
+        refreshInactiveTimeLabel(hasDesktopIdle, idleMilliseconds);
         // if (hasDesktopIdle)
         // {
         //     std::cout << "X server idle time: " << idleMilliseconds << " ms ("
@@ -303,6 +366,7 @@ namespace MainWindow
         lastAutoSavedElapsedSeconds = totalElapsedSeconds;
         setStartPauseButtonLabel();
         refreshElapsedLabel();
+        refreshInactiveTimeLabel();
     }
 
     void onStartPauseClicked(GtkWidget *, gpointer)
@@ -314,6 +378,7 @@ namespace MainWindow
             isRunning = true;
             setStartPauseButtonLabel();
             refreshElapsedLabel();
+            refreshInactiveTimeLabel();
             timerSourceId = g_timeout_add(1000, onTick, nullptr);
             return;
         }
@@ -333,6 +398,7 @@ namespace MainWindow
         lastAutoSavedElapsedSeconds = totalElapsedSeconds;
         setStartPauseButtonLabel();
         refreshElapsedLabel();
+        refreshInactiveTimeLabel();
     }
 
     gboolean onGraceRemainingTick(gpointer userData)
@@ -350,6 +416,7 @@ namespace MainWindow
         {
             resetIdleGraceWindow();
         }
+        refreshInactiveTimeLabel();
 
         if (userData != nullptr)
         {
@@ -508,9 +575,19 @@ namespace MainWindow
             g_signal_connect(mainWindow, "realize", G_CALLBACK(moveWindowToBottomRight), nullptr);
         }
 
+        GtkWidget *overlay = gtk_overlay_new();
+        gtk_container_add(GTK_CONTAINER(mainWindow), overlay);
+
         GtkWidget *windowContainer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
         gtk_container_set_border_width(GTK_CONTAINER(windowContainer), 16);
-        gtk_container_add(GTK_CONTAINER(mainWindow), windowContainer);
+        gtk_container_add(GTK_CONTAINER(overlay), windowContainer);
+
+        inactiveTimeLabel = gtk_label_new("Paused");
+        gtk_widget_set_halign(inactiveTimeLabel, GTK_ALIGN_END);
+        gtk_widget_set_valign(inactiveTimeLabel, GTK_ALIGN_START);
+        gtk_widget_set_margin_top(inactiveTimeLabel, 2);
+        gtk_widget_set_margin_end(inactiveTimeLabel, 8);
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), inactiveTimeLabel);
 
         GtkWidget *timeLabelEventBox = gtk_event_box_new();
         gtk_widget_set_tooltip_text(timeLabelEventBox, "Timer settings");
@@ -544,6 +621,7 @@ namespace MainWindow
         isRunning = true;
 
         refreshElapsedLabel();
+        refreshInactiveTimeLabel();
         setStartPauseButtonLabel();
         if (timerSourceId == 0)
         {
