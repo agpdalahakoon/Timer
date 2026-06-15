@@ -47,6 +47,7 @@ The GNOME extension uses these commands:
 /home/praveen/soft/Timer/timer --command stop
 /home/praveen/soft/Timer/timer --command show
 /home/praveen/soft/Timer/timer --command settings
+/home/praveen/soft/Timer/timer --command exit
 ```
 
 Timer state for the panel is written to `/home/praveen/soft/Timer/timer_status.ini`.

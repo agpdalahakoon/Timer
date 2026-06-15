@@ -78,17 +78,21 @@ class TimerPanelIndicator extends PanelMenu.Button {
         this._stopItem = new PopupMenu.PopupMenuItem('Stop');
         this._showItem = new PopupMenu.PopupMenuItem('Show Timer Window');
         this._settingsItem = new PopupMenu.PopupMenuItem('Settings');
+        this._exitItem = new PopupMenu.PopupMenuItem('Exit');
 
         this._toggleItem.connect('activate', () => this._sendCommand('toggle'));
         this._stopItem.connect('activate', () => this._sendCommand('stop'));
         this._showItem.connect('activate', () => this._sendCommand('show'));
         this._settingsItem.connect('activate', () => this._sendCommand('settings'));
+        this._exitItem.connect('activate', () => this._sendCommand('exit'));
 
         this.menu.addMenuItem(this._toggleItem);
         this.menu.addMenuItem(this._stopItem);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._showItem);
         this.menu.addMenuItem(this._settingsItem);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this.menu.addMenuItem(this._exitItem);
 
         this._startBackend();
         this._refresh();
@@ -122,6 +126,11 @@ class TimerPanelIndicator extends PanelMenu.Button {
         const elapsedText = formatElapsed(status.elapsed_seconds);
         const running = status.running === '1';
         this._toggleItem.label.set_text(running ? 'Pause' : 'Start');
+
+        if (status.exited === '1') {
+            this._label.set_text(`${elapsedText}  Exited`);
+            return;
+        }
 
         if (!running) {
             this._label.set_text(`${elapsedText}  Paused`);

@@ -250,7 +250,7 @@ namespace MainWindow
         return graceSeconds > pauseSeconds ? graceSeconds : pauseSeconds;
     }
 
-    void writeStatusFile(bool hasDesktopIdle, unsigned long idleMilliseconds)
+    void writeStatusFile(bool hasDesktopIdle, unsigned long idleMilliseconds, bool exited = false)
     {
         ensureTimerDataDir();
         long long elapsed = currentDisplayedElapsedSeconds();
@@ -263,6 +263,7 @@ namespace MainWindow
         }
 
         statusFile << "running=" << (isRunning ? 1 : 0) << "\n";
+        statusFile << "exited=" << (exited ? 1 : 0) << "\n";
         statusFile << "elapsed_seconds=" << elapsed << "\n";
         statusFile << "run_started_epoch=" << static_cast<long long>(runStartedEpoch) << "\n";
         statusFile << "idle_available=" << (hasDesktopIdle ? 1 : 0) << "\n";
@@ -375,6 +376,7 @@ namespace MainWindow
     void pauseTimerAndSave(bool writePauseLog, bool removeTickSource = true);
     void startTimer();
     void stopTimer();
+    void exitApplication(bool exitedStatus, bool removeCommandSource = true);
     GtkWidget *createMainWindowView();
     void showMainWindow();
     void showSettingsWindow();
@@ -420,7 +422,7 @@ namespace MainWindow
         return true;
     }
 
-    void handleCommand(const std::string &command)
+    bool handleCommand(const std::string &command)
     {
         if (command == "start")
         {
@@ -456,6 +458,13 @@ namespace MainWindow
         {
             showSettingsWindow();
         }
+        else if (command == "exit")
+        {
+            exitApplication(true, false);
+            return false;
+        }
+
+        return true;
     }
 
     gboolean onCommandPoll(gpointer)
@@ -473,7 +482,10 @@ namespace MainWindow
 
         if (!command.empty())
         {
-            handleCommand(command);
+            if (!handleCommand(command))
+            {
+                return FALSE;
+            }
             writeStatusFile();
         }
 
@@ -579,6 +591,30 @@ namespace MainWindow
         refreshElapsedLabel();
         refreshInactiveTimeLabel();
         writeStatusFile();
+    }
+
+    void exitApplication(bool exitedStatus, bool removeCommandSource)
+    {
+        if (isRunning)
+        {
+            pauseTimerAndSave(false);
+            appendPauseLog(totalElapsedSeconds);
+        }
+        else
+        {
+            saveElapsedSeconds(totalElapsedSeconds);
+            appendPauseLog(totalElapsedSeconds);
+        }
+
+        stopTickingIfNeeded();
+        if (removeCommandSource && commandSourceId != 0)
+        {
+            g_source_remove(commandSourceId);
+            commandSourceId = 0;
+        }
+
+        writeStatusFile(false, 0, exitedStatus);
+        gtk_main_quit();
     }
 
     void onStartPauseClicked(GtkWidget *, gpointer)
@@ -711,25 +747,7 @@ namespace MainWindow
 
     void onWindowDestroy(GtkWidget *, gpointer)
     {
-        if (isRunning)
-        {
-            pauseTimerAndSave(false);
-            appendPauseLog(totalElapsedSeconds);
-        }
-        else
-        {
-            saveElapsedSeconds(totalElapsedSeconds);
-            appendPauseLog(totalElapsedSeconds);
-        }
-
-        if (commandSourceId != 0)
-        {
-            g_source_remove(commandSourceId);
-            commandSourceId = 0;
-        }
-
-        writeStatusFile();
-        gtk_main_quit();
+        exitApplication(false);
     }
 
     void moveWindowToBottomRight(GtkWidget *widget, gpointer)

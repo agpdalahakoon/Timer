@@ -11,11 +11,13 @@ cmake -S . -B build
 cmake --build build
 
 mkdir -p "$APP_DIR"
-cp build/timer "$APP_DIR/timer"
+install -m 0755 build/timer "$APP_DIR/timer.new"
+mv "$APP_DIR/timer.new" "$APP_DIR/timer"
 
 mkdir -p "$EXT_DIR"
 cp gnome-shell/$EXT_UUID/metadata.json "$EXT_DIR/metadata.json"
 cp gnome-shell/$EXT_UUID/extension.js "$EXT_DIR/extension.js"
+cp gnome-shell/$EXT_UUID/stylesheet.css "$EXT_DIR/stylesheet.css"
 
 if command -v gnome-extensions >/dev/null 2>&1; then
     gnome-extensions enable "$EXT_UUID" || true
