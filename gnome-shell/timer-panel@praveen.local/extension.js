@@ -1,7 +1,7 @@
 'use strict';
 
 const ByteArray = imports.byteArray;
-const { GLib, GObject, St } = imports.gi;
+const { Clutter, GLib, GObject, St } = imports.gi;
 const Main = imports.ui.main;
 const PanelMenu = imports.ui.panelMenu;
 const PopupMenu = imports.ui.popupMenu;
@@ -71,6 +71,7 @@ class TimerPanelIndicator extends PanelMenu.Button {
         this._label = new St.Label({
             text: '--:--:--  P --:--',
             style_class: 'timer-panel-label',
+            y_align: Clutter.ActorAlign.CENTER,
         });
         this.add_child(this._label);
 
