@@ -20,6 +20,7 @@ cp gnome-shell/$EXT_UUID/extension.js "$EXT_DIR/extension.js"
 cp gnome-shell/$EXT_UUID/stylesheet.css "$EXT_DIR/stylesheet.css"
 
 if command -v gnome-extensions >/dev/null 2>&1; then
+    gnome-extensions disable "$EXT_UUID" || true
     gnome-extensions enable "$EXT_UUID" || true
 fi
 
