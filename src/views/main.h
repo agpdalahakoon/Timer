@@ -33,12 +33,13 @@ namespace MainWindow
     int appLockFd = -1;
     long long totalElapsedSeconds = 0;
     long long lastAutoSavedElapsedSeconds = 0;
-    long long idlePauseGraceSeconds = 0;
+    long long idlePauseSeconds = 5 * 60;
     std::time_t runStartedEpoch = 0;
     std::chrono::steady_clock::time_point runStartTime;
-    std::chrono::steady_clock::time_point ignoreIdleUntilTime;
 
-    constexpr unsigned long DESKTOP_IDLE_PAUSE_MS = 5UL * 60UL * 1000UL;
+    constexpr long long DEFAULT_IDLE_PAUSE_MINUTES = 5;
+    constexpr long long MIN_IDLE_PAUSE_MINUTES = 1;
+    constexpr long long MAX_IDLE_PAUSE_MINUTES = 240;
 
     const std::string timerDataDir = "/home/praveen/soft/Timer";
     const std::string stateFilePath = "/home/praveen/soft/Timer/timer_state.txt";
@@ -47,7 +48,6 @@ namespace MainWindow
     const std::string statusFilePath = "/home/praveen/soft/Timer/timer_status.ini";
     const std::string commandFilePath = "/home/praveen/soft/Timer/timer_command.txt";
     const std::string lockFilePath = "/home/praveen/soft/Timer/timer.lock";
-    const char *graceRemainingTimerDataKey = "grace-remaining-timer-id";
 
     void ensureTimerDataDir()
     {
@@ -66,31 +66,44 @@ namespace MainWindow
         return seconds >= 0 ? seconds : 0;
     }
 
-    long long loadSavedIdleGraceSeconds()
+    long long clampIdlePauseMinutes(long long minutes)
+    {
+        if (minutes <= 0)
+        {
+            minutes = DEFAULT_IDLE_PAUSE_MINUTES;
+        }
+        else if (minutes < MIN_IDLE_PAUSE_MINUTES)
+        {
+            minutes = MIN_IDLE_PAUSE_MINUTES;
+        }
+        else if (minutes > MAX_IDLE_PAUSE_MINUTES)
+        {
+            minutes = MAX_IDLE_PAUSE_MINUTES;
+        }
+
+        return minutes;
+    }
+
+    long long loadSavedIdlePauseSeconds()
     {
         ensureTimerDataDir();
         std::ifstream settingsFile(settingsFilePath);
-        long long minutes = 0;
+        long long minutes = DEFAULT_IDLE_PAUSE_MINUTES;
         if (settingsFile.is_open())
         {
             settingsFile >> minutes;
         }
 
-        if (minutes < 0)
-        {
-            minutes = 0;
-        }
-
-        return minutes * 60;
+        return clampIdlePauseMinutes(minutes) * 60;
     }
 
-    void saveIdleGraceSeconds(long long seconds)
+    void saveIdlePauseSeconds(long long seconds)
     {
         ensureTimerDataDir();
         std::ofstream settingsFile(settingsFilePath, std::ios::trunc);
         if (settingsFile.is_open())
         {
-            settingsFile << seconds / 60;
+            settingsFile << clampIdlePauseMinutes(seconds / 60);
         }
     }
 
@@ -166,16 +179,6 @@ namespace MainWindow
         return totalElapsedSeconds + segment;
     }
 
-    void resetIdleGraceWindow()
-    {
-        ignoreIdleUntilTime = std::chrono::steady_clock::now() + std::chrono::seconds(idlePauseGraceSeconds);
-    }
-
-    bool isIdleGraceActive()
-    {
-        return idlePauseGraceSeconds > 0 && std::chrono::steady_clock::now() < ignoreIdleUntilTime;
-    }
-
     std::string formatMinutesSeconds(long long seconds)
     {
         if (seconds < 0)
@@ -192,49 +195,15 @@ namespace MainWindow
         return out.str();
     }
 
-    std::string graceRemainingText()
-    {
-        if (idlePauseGraceSeconds <= 0)
-        {
-            return "Disabled";
-        }
-
-        if (!isRunning)
-        {
-            return "Not running";
-        }
-
-        auto now = std::chrono::steady_clock::now();
-        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(ignoreIdleUntilTime - now).count();
-        return formatMinutesSeconds(remaining);
-    }
-
-    void refreshGraceRemainingLabel(GtkWidget *label)
-    {
-        std::string text = "Grace remaining: " + graceRemainingText();
-        gtk_label_set_text(GTK_LABEL(label), text.c_str());
-    }
-
-    long long remainingGraceSeconds()
-    {
-        if (!isRunning || idlePauseGraceSeconds <= 0)
-        {
-            return 0;
-        }
-
-        auto now = std::chrono::steady_clock::now();
-        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(ignoreIdleUntilTime - now).count();
-        return remaining > 0 ? remaining : 0;
-    }
-
     long long remainingIdlePauseSeconds(unsigned long idleMilliseconds)
     {
-        if (idleMilliseconds >= DESKTOP_IDLE_PAUSE_MS)
+        unsigned long idlePauseMilliseconds = static_cast<unsigned long>(idlePauseSeconds) * 1000UL;
+        if (idleMilliseconds >= idlePauseMilliseconds)
         {
             return 0;
         }
 
-        unsigned long remainingMilliseconds = DESKTOP_IDLE_PAUSE_MS - idleMilliseconds;
+        unsigned long remainingMilliseconds = idlePauseMilliseconds - idleMilliseconds;
         return static_cast<long long>((remainingMilliseconds + 999) / 1000);
     }
 
@@ -245,9 +214,7 @@ namespace MainWindow
             return -1;
         }
 
-        long long graceSeconds = remainingGraceSeconds();
-        long long pauseSeconds = remainingIdlePauseSeconds(idleMilliseconds);
-        return graceSeconds > pauseSeconds ? graceSeconds : pauseSeconds;
+        return remainingIdlePauseSeconds(idleMilliseconds);
     }
 
     void writeStatusFile(bool hasDesktopIdle, unsigned long idleMilliseconds, bool exited = false)
@@ -268,7 +235,7 @@ namespace MainWindow
         statusFile << "run_started_epoch=" << static_cast<long long>(runStartedEpoch) << "\n";
         statusFile << "idle_available=" << (hasDesktopIdle ? 1 : 0) << "\n";
         statusFile << "pause_remaining_seconds=" << pauseRemaining << "\n";
-        statusFile << "idle_grace_seconds=" << idlePauseGraceSeconds << "\n";
+        statusFile << "idle_pause_seconds=" << idlePauseSeconds << "\n";
         statusFile << "updated_epoch=" << static_cast<long long>(std::time(nullptr)) << "\n";
     }
 
@@ -507,7 +474,7 @@ namespace MainWindow
         //     std::cout << "X server idle time: unavailable" << std::endl;
         // }
 
-        if (isRunning && hasDesktopIdle && !isIdleGraceActive() && idleMilliseconds >= DESKTOP_IDLE_PAUSE_MS)
+        if (isRunning && hasDesktopIdle && remainingIdlePauseSeconds(idleMilliseconds) <= 0)
         {
             pauseTimerAndSave(true, false);
             timerSourceId = 0;
@@ -564,7 +531,6 @@ namespace MainWindow
 
         runStartTime = std::chrono::steady_clock::now();
         runStartedEpoch = std::time(nullptr);
-        resetIdleGraceWindow();
         isRunning = true;
         setStartPauseButtonLabel();
         refreshElapsedLabel();
@@ -633,42 +599,17 @@ namespace MainWindow
         stopTimer();
     }
 
-    gboolean onGraceRemainingTick(gpointer userData)
-    {
-        refreshGraceRemainingLabel(GTK_WIDGET(userData));
-        return TRUE;
-    }
-
-    void onIdleGraceMinutesChanged(GtkSpinButton *spinButton, gpointer userData)
+    void onIdlePauseMinutesChanged(GtkSpinButton *spinButton, gpointer)
     {
         gint minutes = gtk_spin_button_get_value_as_int(spinButton);
-        idlePauseGraceSeconds = static_cast<long long>(minutes) * 60;
-        saveIdleGraceSeconds(idlePauseGraceSeconds);
-        if (isRunning)
-        {
-            resetIdleGraceWindow();
-        }
+        idlePauseSeconds = clampIdlePauseMinutes(minutes) * 60;
+        saveIdlePauseSeconds(idlePauseSeconds);
         refreshInactiveTimeLabel();
-
-        if (userData != nullptr)
-        {
-            refreshGraceRemainingLabel(GTK_WIDGET(userData));
-        }
     }
 
     void onSettingsDialogResponse(GtkDialog *dialog, gint, gpointer)
     {
         gtk_widget_destroy(GTK_WIDGET(dialog));
-    }
-
-    void onSettingsDialogDestroy(GtkWidget *dialog, gpointer)
-    {
-        guint sourceId = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(dialog), graceRemainingTimerDataKey));
-        if (sourceId != 0)
-        {
-            g_source_remove(sourceId);
-            g_object_set_data(G_OBJECT(dialog), graceRemainingTimerDataKey, GUINT_TO_POINTER(0));
-        }
     }
 
     void openSettingsDialog()
@@ -686,14 +627,14 @@ namespace MainWindow
         gtk_container_set_border_width(GTK_CONTAINER(settingsBox), 16);
         gtk_container_add(GTK_CONTAINER(contentArea), settingsBox);
 
-        GtkWidget *titleLabel = gtk_label_new("Ignore inactivity after start/resume");
+        GtkWidget *titleLabel = gtk_label_new("Pause after inactivity");
         gtk_widget_set_halign(titleLabel, GTK_ALIGN_START);
         gtk_box_pack_start(GTK_BOX(settingsBox), titleLabel, FALSE, FALSE, 0);
 
         GtkWidget *inputRow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         gtk_box_pack_start(GTK_BOX(settingsBox), inputRow, FALSE, FALSE, 0);
 
-        GtkAdjustment *adjustment = gtk_adjustment_new(idlePauseGraceSeconds / 60, 0, 240, 1, 5, 0);
+        GtkAdjustment *adjustment = gtk_adjustment_new(idlePauseSeconds / 60, 1, 240, 1, 5, 0);
         GtkWidget *minutesSpin = gtk_spin_button_new(adjustment, 1, 0);
         gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(minutesSpin), TRUE);
         gtk_box_pack_start(GTK_BOX(inputRow), minutesSpin, FALSE, FALSE, 0);
@@ -701,17 +642,8 @@ namespace MainWindow
         GtkWidget *minutesLabel = gtk_label_new("minutes");
         gtk_box_pack_start(GTK_BOX(inputRow), minutesLabel, FALSE, FALSE, 0);
 
-        GtkWidget *graceRemainingLabel = gtk_label_new(nullptr);
-        gtk_widget_set_halign(graceRemainingLabel, GTK_ALIGN_START);
-        refreshGraceRemainingLabel(graceRemainingLabel);
-        gtk_box_pack_start(GTK_BOX(settingsBox), graceRemainingLabel, FALSE, FALSE, 0);
-
-        guint graceRemainingTimerId = g_timeout_add(1000, onGraceRemainingTick, graceRemainingLabel);
-        g_object_set_data(G_OBJECT(dialog), graceRemainingTimerDataKey, GUINT_TO_POINTER(graceRemainingTimerId));
-
-        g_signal_connect(minutesSpin, "value-changed", G_CALLBACK(onIdleGraceMinutesChanged), graceRemainingLabel);
+        g_signal_connect(minutesSpin, "value-changed", G_CALLBACK(onIdlePauseMinutesChanged), nullptr);
         g_signal_connect(dialog, "response", G_CALLBACK(onSettingsDialogResponse), nullptr);
-        g_signal_connect(dialog, "destroy", G_CALLBACK(onSettingsDialogDestroy), nullptr);
         gtk_widget_show_all(dialog);
     }
 
@@ -798,7 +730,7 @@ namespace MainWindow
         }
 
         totalElapsedSeconds = loadSavedElapsedSeconds();
-        idlePauseGraceSeconds = loadSavedIdleGraceSeconds();
+        idlePauseSeconds = loadSavedIdlePauseSeconds();
         lastAutoSavedElapsedSeconds = totalElapsedSeconds;
 
         // Keep the previous behavior: opening the app starts/resumes the timer.
