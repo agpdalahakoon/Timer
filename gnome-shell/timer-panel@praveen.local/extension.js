@@ -88,7 +88,6 @@ class TimerPanelIndicator extends PanelMenu.Button {
         this._exitItem.connect('activate', () => this._sendCommand('exit'));
 
         this.menu.addMenuItem(this._toggleItem);
-        this.menu.addMenuItem(this._stopItem);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this.menu.addMenuItem(this._showItem);
         this.menu.addMenuItem(this._settingsItem);
